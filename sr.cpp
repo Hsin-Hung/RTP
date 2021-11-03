@@ -6,11 +6,13 @@
 #include <sys/file.h>
 #include <sys/types.h>
 #include <netinet/in.h>
-#include <unistd.h>
+#include <queue>
+#include <vector>
+#include <iostream>
 
 /* ******************************************************************
    ARQ NETWORK EMULATOR: VERSION 1.1  J.F.Kurose
-   MODIFIED by Chong Wang on Oct.21,2005 for csa2,csa3 environments
+   Modified by Chong Wang on Oct.21,2005 for csa2,csa3 environments
 
    This code should be used for PA2, unidirectional data transfer protocols
    (from A to B)
@@ -40,11 +42,61 @@ struct pkt
   int acknum;
   int checksum;
   char payload[20];
-
 };
 
 /*- Your Definitions
   ---------------------------------------------------------------------------*/
+
+void A_output(msg message);
+#define BUFFER_SIZE 5000
+
+struct packet_slot
+{
+  struct pkt packet;
+  double timeout;
+
+  int sent;
+  int acked;
+};
+
+std::vector<struct packet_slot> send_window(BUFFER_SIZE);
+std::vector<struct packet_slot> rcv_window(BUFFER_SIZE);
+
+// struct packet_slot send_window[BUFFER_SIZE];
+// struct packet_slot rcv_window[BUFFER_SIZE];
+std::queue<struct msg> buffer;
+double cur_time = 0;
+
+// enum Receiver_State{
+
+// };
+
+struct Sender
+{
+  int id;
+  int seq;
+  int send_base;
+
+} Sender_A;
+
+struct Receiver
+{
+  int id;
+  int seq;
+  int rcv_base;
+
+} Receiver_B;
+
+double A_from_layer5 = 0.0;
+double A_to_B = 0.0;
+double B_from_A = 0.0;
+double A_retrans_B = 0.0;
+double B_to_layer5 = 0.0;
+double B_acks = 0.0;
+double B_corrupt = 0.0;
+double loss_ratio = 0.0;
+double corrupt_ratio = 0.0;
+double avg_comm_time = 0.0;
 
 /* Please use the following values in your program */
 
@@ -60,7 +112,7 @@ void tolayer5(char datasent[20]);
 void starttimer(int AorB, double increment);
 void stoptimer(int AorB);
 
-/* WINDOW_SIZE, RXMT_TIMEOUT and TRACE are inputs to the program;
+/* WINDOW_SIZE, RXMT_TIMEOUT, and TRACE are inputs to the program;
    Please set an appropriate value for LIMIT_SEQNO.
    You have to use these variables in your
    routines --------------------------------------------------------------*/
@@ -68,52 +120,10 @@ void stoptimer(int AorB);
 extern int WINDOW_SIZE;     // size of the window
 extern int LIMIT_SEQNO;     // when sequence number reaches this value,                                     // it wraps around
 extern double RXMT_TIMEOUT; // retransmission timeout
-extern int TRACE;           // trace level, for your debug purpose
+extern int TRACE;           // trace Level, for your debug purpose
 extern double time_now;     // simulation time, for your debug purpose
 
 /********* YOU MAY ADD SOME ROUTINES HERE ********/
-
-struct window_frame {
-  struct pkt packet;
-  int timeout;
-  int sent; 
-  int acked;
-} Frame;
-
-struct window_frame send_window[1000];
-struct window_frame rcv_window[1000];
-struct pkt buffer[1000];
-int buffer_i = 0;
-
-enum Sender_State
-{
-  WAIT_ABOVE,
-  WAIT_ACK
-
-};
-
-// enum Receiver_State{
-
-// };
-
-struct Sender
-{
-  int id;
-  int seq;
-  int send_base;
-  enum Sender_State state;
-
-} Sender_A;
-
-struct Receiver
-{
-  int id;
-  int seq;
-  int rcv_base;
-
-} Receiver_B;
-
-/* compute the checksum by summing up all fields in the given packet */
 int compute_checksum(struct pkt *packet)
 {
 
@@ -121,93 +131,119 @@ int compute_checksum(struct pkt *packet)
   checksum += packet->seqnum;
   checksum += packet->acknum;
 
-  for (int i = 0; packet->payload[i] != '\0'; ++i)
+  for (int i = 0; i < 20; i++)
   {
     checksum += packet->payload[i];
   }
   return checksum;
 }
 
-void send_ack(int ack)
-{
-
-  struct pkt packet;
-  packet.acknum = ack;
-  packet.checksum = compute_checksum(&packet);
-  tolayer3(B, packet);
-}
-
-int check_send_window()
+int is_window_full()
 {
 
   return Sender_A.seq >= Sender_A.send_base + WINDOW_SIZE;
 }
 
-void buffer_msg(struct msg message){
-
-
-
-}
-
-void deliver_packets(){
-
-
-
-
-}
-
-
-
-/********* STUDENTS WRITE THE NEXT SEVEN ROUTINES *********/
-
-/* called from layer 5, passed the data to be sent to other side */
-void
-    A_output(message) struct msg message;
+void slide_and_send()
 {
 
-  struct pkt packet;
-  packet.seqnum = Sender_A.seq;
-  memmove(packet.payload, message.data, 20);
-  packet.checksum = compute_checksum(&packet);
+  int i = 0, count = 0;
+  for (i = Sender_A.send_base; i < Sender_A.send_base + WINDOW_SIZE; ++i)
+  {
 
-  if(!check_send_window()){
-    buffer_msg(packet);
+    if (!send_window.at(i % WINDOW_SIZE).acked)
+    {
+      break;
+    }
+    send_window.at(i % WINDOW_SIZE).acked = 0;
+    send_window.at(i % WINDOW_SIZE).sent = 0;
+    ++count;
+  }
+
+  Sender_A.send_base += count;
+
+  while (count > 0)
+  {
+    if (buffer.empty())
+      break;
+    A_output(buffer.front());
+    buffer.pop();
+    --count;
+  }
+}
+
+/********* STUDENTS WRITE THE NEXT SIX ROUTINES *********/
+
+/* called from layer 5, passed the data to be sent to other side */
+void A_output(msg message)
+{
+
+  ++A_from_layer5;
+
+  if (is_window_full())
+  {
+    buffer.push(message);
     return;
   }
 
-  if (Sender_A.state == WAIT_ACK)
-  {
-    printf("Waiting for ACK ...");
-  }
+  struct packet_slot *p = &send_window.at(Sender_A.seq % WINDOW_SIZE);
 
-  packets_window[Sender_A.seq].packet = packet;
-  packets_window[Sender_A.seq].sent = 1;
-  packets_window[Sender_A.seq].acked = 0;
-  // packets_window[Sender_A.seq].timeout
-  Sender_A.state = WAIT_ACK;
-  tolayer3(A, packet);
+  if (p->sent)
+    return;
+
+  /* set up packet */
+  memcpy(p->packet.payload, message.data, sizeof(message.data));
+  p->packet.acknum = 0;
+  p->packet.seqnum = Sender_A.seq;
+  p->packet.checksum = compute_checksum(&(p->packet));
+  p->sent = 1;
+  p->acked = 0;
+  p->timeout = (cur_time + RXMT_TIMEOUT);
+
+  tolayer3(A, p->packet);
   ++Sender_A.seq;
-  starttimer(A, RXMT_TIMEOUT);
+  ++A_to_B;
 }
 
 /* called from layer 3, when a packet arrives for layer 4 */
-void
-    A_input(packet) struct pkt packet;
+void A_input(pkt packet)
 {
-  if(packet.checksum != compute_checksum(&packet)){
-    printf("Packet corrupted!");
+  if (packet.checksum != compute_checksum(&packet))
+  {
+    printf("Packet corrupted!\n");
     return;
   }
 
+  if (packet.acknum && packet.seqnum < Sender_A.send_base)
+  {
+    printf("Dup ACK A\n");
+    return;
+  }
 
-  packets_window[packet.seqnum].acked = 1;
-  
-  
+  send_window.at(packet.seqnum % WINDOW_SIZE).acked = 1;
+
+  slide_and_send();
 }
 
 /* called when A's timer goes off */
-void A_timerinterrupt(void)
+void A_timerinterrupt()
 {
+  cur_time += RXMT_TIMEOUT;
+
+  for (int i = Sender_A.send_base; i < Sender_A.seq; i++)
+  {
+
+    struct packet_slot *p = &send_window.at(i % WINDOW_SIZE);
+
+    if (p->sent == 1 && p->timeout >= cur_time)
+    {
+      tolayer3(A, p->packet);
+      ++A_retrans_B;
+      p->timeout = cur_time + RXMT_TIMEOUT;
+    }
+  }
+
+  starttimer(A, RXMT_TIMEOUT);
 }
 
 /* the following routine will be called once (only) before any other */
@@ -216,33 +252,88 @@ void A_init(void)
 {
   Sender_A.id = A;
   Sender_A.seq = FIRST_SEQNO;
-  Sender_A.state = WAIT_ABOVE;
   Sender_A.send_base = FIRST_SEQNO;
+
+  for (int i = 0; i < BUFFER_SIZE; i++)
+  {
+
+    send_window.at(i).sent = 0;
+  }
+
+  starttimer(A, RXMT_TIMEOUT);
 }
 
 /* called from layer 3, when a packet arrives for layer 4 at B*/
-void
-    B_input(packet) struct pkt packet;
+void B_input(pkt packet)
 {
+  ++B_from_A;
   if (packet.checksum != compute_checksum(&packet))
   {
-    printf("corrupted packet!");
-    send_ack(0);
+    printf("corrupted packet!\n");
+    ++B_corrupt;
     return;
   }
 
-  send_ack(1);
+  if (packet.seqnum >= Receiver_B.rcv_base + WINDOW_SIZE)
+  {
+    printf("error packet\n");
+    return;
+  }
 
+  struct packet_slot *p = &rcv_window.at(packet.seqnum % WINDOW_SIZE);
 
-  tolayer5(packet.payload);
+  if (p->acked)
+  {
+
+    packet.acknum = 1; // ????
+    packet.checksum = compute_checksum(&packet);
+    tolayer3(B, packet);
+    ++B_acks;
+    return;
+  }
+
+  p->acked = 1;
+
+  memcpy(p->packet.payload, packet.payload, sizeof(packet.payload));
+
+  p->packet.checksum = packet.checksum;
+  p->packet.seqnum = packet.seqnum;
+  p->packet.acknum = packet.acknum;
+
+  packet.acknum = 1;
+  packet.checksum = compute_checksum(&packet);
+  ++B_acks;
+  tolayer3(B, packet);
+
+  int i, count = 0;
+  for (i = Receiver_B.rcv_base; i < Receiver_B.rcv_base + WINDOW_SIZE; ++i)
+  {
+
+    struct packet_slot *p = &rcv_window.at(i);
+    if (!p->acked)
+      break;
+    tolayer5(p->packet.payload);
+    p->acked = 0;
+    p->sent = 0;
+    ++B_to_layer5;
+    ++count;
+  }
+
+  Receiver_B.rcv_base += count;
 }
 
 /* the following rouytine will be called once (only) before any other */
 /* entity B routines are called. You can use it to do any initialization */
-void B_init(void)
+void B_init()
 {
   Receiver_B.id = B;
   Receiver_B.seq = FIRST_SEQNO;
+
+  for (int i = 0; i < BUFFER_SIZE; i++)
+  {
+
+    rcv_window[i].sent = 0;
+  }
 }
 
 /* called at end of simulation to print final statistics */
@@ -250,13 +341,13 @@ void Simulation_done()
 {
   /* TO PRINT THE STATISTICS, FILL IN THE DETAILS BY PUTTING VARIBALE NAMES. DO NOT CHANGE THE FORMAT OF PRINTED OUTPUT */
   printf("\n\n===============STATISTICS======================= \n\n");
-  printf("Number of original packets transmitted by A: <YourVariableHere> \n");
-  printf("Number of retransmissions by A: <YourVariableHere> \n");
-  printf("Number of data packets delivered to layer 5 at B: <YourVariableHere> \n");
-  printf("Number of ACK packets sent by B: <YourVariableHere> \n");
-  printf("Number of corrupted packets: <YourVariableHere> \n");
-  printf("Ratio of lost packets: <YourVariableHere> \n");
-  printf("Ratio of corrupted packets: <YourVariableHere> \n");
+  printf("Number of original packets transmitted by A: %f \n", A_to_B);
+  printf("Number of retransmissions by A: %f \n", A_retrans_B);
+  printf("Number of data packets delivered to layer 5 at B: %f \n", B_to_layer5);
+  printf("Number of ACK packets sent by B: %f \n", B_acks);
+  printf("Number of corrupted packets: %f \n", B_corrupt);
+  printf("Ratio of lost packets: %f \n", (A_retrans_B - B_corrupt) / (A_to_B + A_retrans_B) + B_acks);
+  printf("Ratio of corrupted packets: %f \n", (B_corrupt) / ((A_to_B + A_retrans_B) + B_acks - (A_retrans_B - B_corrupt)));
   printf("Average RTT: <YourVariableHere> \n");
   printf("Average communication time: <YourVariableHere> \n");
   printf("==================================================");
@@ -307,8 +398,8 @@ void insertevent(struct event *p);
 #define OFF 0
 #define ON 1
 
-int TRACE = 0; /* for debugging purpose */
-int fileoutput;
+int TRACE = 1; /* for debugging purpose*/
+FILE *fileoutput;
 double time_now = 0.000;
 int WINDOW_SIZE;
 int LIMIT_SEQNO;
@@ -321,6 +412,7 @@ int nlost;          /* number lost in media */
 int ncorrupt;       /* number corrupted by media*/
 int nsim = 0;
 int nsimmax = 0;
+
 unsigned int seed[5]; /* seed used in the pseudo-random generator */
 
 int main(int argc, char **argv)
@@ -401,7 +493,7 @@ terminate:
 void init(void) /* initialize the simulator */
 {
   int i = 0;
-  printf("----- * Network Simulator Version 1.1 * ------ \n\n");
+  printf("---- * Network Simulator Version 1.1 * ------ \n\n");
   printf("Enter number of messages to simulate: ");
   scanf("%d", &nsimmax);
   printf("Enter packet loss probability [enter 0.0 for no loss]:");
@@ -412,7 +504,7 @@ void init(void) /* initialize the simulator */
   scanf("%lf", &lambda);
   printf("Enter window size [>0]:");
   scanf("%d", &WINDOW_SIZE);
-  LIMIT_SEQNO = WINDOW_SIZE * 2; // set appropriately; here assumes SR
+  LIMIT_SEQNO = WINDOW_SIZE * 2; // set appropriately; assumes SR here!
   printf("Enter retransmission timeout [> 0.0]:");
   scanf("%lf", &RXMT_TIMEOUT);
   printf("Enter trace level:");
@@ -421,8 +513,8 @@ void init(void) /* initialize the simulator */
   scanf("%d", &seed[0]);
   for (i = 1; i < 5; i++)
     seed[i] = seed[0] + i;
-  fileoutput = open("OutputFile", O_CREAT | O_WRONLY | O_TRUNC, 0644);
-  if (fileoutput < 0)
+  fileoutput = fopen("OutputFile", "w");
+  if (fileoutput < (void *)0)
     exit(1);
   ntolayer3 = 0;
   nlost = 0;
@@ -435,7 +527,7 @@ void init(void) /* initialize the simulator */
 /* mrand(): return a double in range [0,1].  The routine below is used to */
 /* isolate all random number generation in one location.  We assume that the*/
 /* system-supplied rand() function return an int in therange [0,mmm]        */
-/*     modified by Chong Wang on Oct.21,2005                                */
+/*      modified by Chong Wang on Oct.21, 2005                              */
 /****************************************************************************/
 int nextrand(int i)
 {
@@ -460,7 +552,6 @@ void generate_next_arrival(void)
 {
   double x, log(), ceil();
   struct event *evptr;
-  //   char *malloc(); commented out by matta 10/17/2013
 
   if (TRACE > 2)
     printf("          GENERATE NEXT ARRIVAL: creating new arrival\n");
@@ -474,8 +565,7 @@ void generate_next_arrival(void)
   insertevent(evptr);
 }
 
-void
-    insertevent(p) struct event *p;
+void insertevent(event *p)
 {
   struct event *q, *qold;
 
@@ -532,8 +622,7 @@ void printevlist(void)
 /********************** Student-callable ROUTINES ***********************/
 
 /* called by students routine to cancel a previously-started timer */
-void
-    stoptimer(AorB) int AorB; /* A or B is trying to stop timer */
+void stoptimer(int AorB)
 {
   struct event *q /* ,*qold */;
   if (TRACE > 2)
@@ -563,14 +652,11 @@ void
   printf("Warning: unable to cancel your timer. It wasn't running.\n");
 }
 
-void
-    starttimer(AorB, increment) int AorB; /* A or B is trying to stop timer */
-double increment;
+void starttimer(int AorB, double increment)
 {
 
   struct event *q;
   struct event *evptr;
-  // char *malloc(); commented out by matta 10/17/2013
 
   if (TRACE > 2)
     printf("          START TIMER: starting timer at %f\n", time_now);
@@ -592,13 +678,10 @@ double increment;
 }
 
 /************************** TOLAYER3 ***************/
-void
-    tolayer3(AorB, packet) int AorB; /* A or B is trying to stop timer */
-struct pkt packet;
+void tolayer3(int AorB, pkt packet)
 {
   struct pkt *mypktptr;
   struct event *evptr, *q;
-  // char *malloc(); commented out by matta 10/17/2013
   double lastime, x;
   int i;
 
@@ -644,7 +727,6 @@ struct pkt packet;
   evptr->evtime = lastime + 1 + 9 * mrand(2);
 
   /* simulate corruption: */
-  /* modified by Chong Wang on Oct.21, 2005  */
   if (mrand(3) < corruptprob)
   {
     ncorrupt++;
@@ -663,8 +745,7 @@ struct pkt packet;
   insertevent(evptr);
 }
 
-void
-    tolayer5(datasent) char datasent[20];
+void tolayer5(char datasent[20])
 {
-  write(fileoutput, datasent, 20);
+  fwrite(datasent, 1, 20, fileoutput);
 }
