@@ -42,6 +42,7 @@ struct pkt
   int seqnum;
   int acknum;
   int checksum;
+  int sack[5];
   char payload[20];
 };
 
@@ -79,7 +80,7 @@ struct Sender
 struct Receiver
 {
   int rcv_base;
-  int last_ack_seq;
+  int expected_seq;
 
 } Receiver_B;
 
@@ -142,12 +143,17 @@ int is_send_window_full()
   return Sender_A.next_seq >= Sender_A.send_base + WINDOW_SIZE;
 }
 
-void slide_and_send(int acknum)
+void slide_and_send()
 {
 
   int count = 0;
-  for (int i = Sender_A.send_base; i <= acknum; ++i)
+  for (int i = Sender_A.send_base; i < Sender_A.send_base + WINDOW_SIZE; ++i)
   {
+
+    /* if packet is not acked, then stop sliding window */
+    if (send_window.at(i).key != 2)
+      break;
+    send_window.at(i).key = 0;
     ++count;
   }
 
@@ -173,22 +179,15 @@ void deliver_packets()
   {
 
     p = &rcv_window.at(i);
-    if (p->key != 1)
+    if (!p->key)
       break;
     tolayer5(p->packet.payload);
-    p->key = 2;
+    p->key = 0;
     ++B_to_layer5;
     ++count;
   }
-  Receiver_B.rcv_base += count;
-}
 
-void send_ack(int acknum)
-{
-  struct pkt packet;
-  packet.acknum = acknum;
-  packet.checksum = compute_checksum(&packet);
-  tolayer3(B, packet);
+  Receiver_B.rcv_base += count;
 }
 
 /********* STUDENTS WRITE THE NEXT SIX ROUTINES *********/
@@ -251,28 +250,17 @@ void A_input(pkt packet)
   {
     std::cout << "ERROR: Ack future packet\n"
               << std::endl;
-    return;
   }
 
-  /* if you get duplicate ack */
-  if (send_window.at(packet.acknum).key == 2)
-  {
-
-    for (int i = Sender_A.send_base; i < Sender_A.send_base + WINDOW_SIZE; ++i)
-    {
-
-      if (send_window.at(i).key == 1)
-      {
-        tolayer3(A, send_window.at(i).packet);
-        ++A_retrans_B;
-        break;
-      }
-    }
-    return;
+  Sender_A.send_base = packet.acknum + 1;
+  if(Sender_A.send_base == Sender_A.next_seq){
+    stoptimer(A);
+    send_window.at(packet.seqnum).key = 2;
+    slide_and_send();
+  }else{
+    starttimer(A, RXMT_TIMEOUT);
   }
-
-  send_window.at(packet.acknum).key = 2;
-  slide_and_send(packet.acknum);
+  
 }
 
 /* called when A's timer goes off */
@@ -283,16 +271,12 @@ void A_timerinterrupt()
   {
 
     struct packet_slot *p = &send_window.at(i);
-
-    if (p->key == 1 && p->timeout < time_now)
-    {
-      p->timeout = (time_now + RXMT_TIMEOUT);
-      tolayer3(A, p->packet);
-      ++A_retrans_B;
-    }
+    tolayer3(A, p->packet);
+    ++A_retrans_B;
+    
   }
 
-  starttimer(A, TIMER_INCR);
+  starttimer(A, RXMT_TIMEOUT);
 }
 
 /* the following routine will be called once (only) before any other */
@@ -306,7 +290,7 @@ void A_init(void)
   {
     send_window[i].key = 0;
   }
-  starttimer(A, TIMER_INCR);
+  starttimer(A, RXMT_TIMEOUT);
 }
 
 /* called from layer 3, when a packet arrives for layer 4 at B*/
@@ -322,9 +306,9 @@ void B_input(pkt packet)
     return;
   }
 
-  if (packet.seqnum >= Receiver_B.rcv_base + WINDOW_SIZE)
-  {
-    std::cout << "Packet seq exceed recv window" << std::endl;
+  if(packet.seqnum != Receiver_B.expected_seq){
+
+    std::cout << "Not expected seq number!\n" << std::endl;
     return;
   }
 
@@ -333,43 +317,35 @@ void B_input(pkt packet)
   /* if the packet has already been received and acked, simply ack again */
   if (p->key)
   {
-    std::cout << "Duplicate packet!\n"
-              << std::endl;
-    send_ack(Receiver_B.last_ack_seq);
+
+    packet.acknum = Receiver_B.expected_seq;
+    packet.checksum = compute_checksum(&packet);
+    tolayer3(B, packet);
     ++B_acks;
     return;
   }
 
-  /* data packet is new */
-
+  p->key = 1;
+  tolayer5(packet.payload);
   /* add the packet into receiver window */
   memcpy(p->packet.payload, packet.payload, sizeof(packet.payload));
   p->packet.checksum = packet.checksum;
   p->packet.seqnum = packet.seqnum;
   p->packet.acknum = packet.acknum;
 
-  /* if the data packet is in order */
-  if (packet.seqnum == Receiver_B.last_ack_seq + 1)
-  {
-    p->key = 1;
-    Receiver_B.last_ack_seq = packet.seqnum;
-    send_ack(Receiver_B.last_ack_seq);
-    ++B_acks;
-    deliver_packets();
-  }
-  else
-  {
-    p->key = 0;
-    send_ack(Receiver_B.last_ack_seq);
-    ++B_acks;
-  }
+  packet.acknum = Receiver_B.expected_seq;
+  packet.checksum = compute_checksum(&packet);
+  tolayer3(B, packet);
+  ++Receiver_B.expected_seq;
+  ++B_acks;
+
 }
 
 /* the following rouytine will be called once (only) before any other */
 /* entity B routines are called. You can use it to do any initialization */
 void B_init()
 {
-  Receiver_B.last_ack_seq = -1;
+
   for (int i = 0; i < BUFFER_SIZE; i++)
   {
 
