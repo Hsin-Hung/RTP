@@ -51,7 +51,7 @@ struct pkt
 void A_output(msg message);
 #define BUFFER_SIZE 5000
 #define TIMER_INCR 1.0
-double cur_time = 0.0;
+
 struct packet_slot
 {
   struct pkt packet;
@@ -241,7 +241,7 @@ void A_input(pkt packet)
 
   if (packet.acknum < Sender_A.send_base)
   {
-    std::cout << "Dup ACK Ignore\n"
+    std::cout << "Old dup ACK Ignore\n"
               << std::endl;
 
     return;
@@ -249,7 +249,7 @@ void A_input(pkt packet)
 
   if (packet.acknum >= Sender_A.send_base + WINDOW_SIZE)
   {
-    std::cout << "ERROR: Ack future packet\n"
+    std::cout << "ERROR: future packet\n"
               << std::endl;
     return;
   }
