@@ -136,22 +136,62 @@ int compute_checksum(struct pkt *packet)
   return checksum;
 }
 
+int is_within_window(int AorB, int seq)
+{
+
+  if (AorB == A)
+  {
+
+    int tail = (Sender_A.send_base + WINDOW_SIZE) % LIMIT_SEQNO;
+
+    if (tail < Sender_A.send_base)
+    {
+
+      return seq < tail || seq >= Sender_A.send_base;
+    }
+    else
+    {
+
+      return seq >= Sender_A.send_base && seq < tail;
+    }
+  }
+  else
+  {
+
+    int tail = (Receiver_B.rcv_base + WINDOW_SIZE) % LIMIT_SEQNO;
+
+    if (tail < Receiver_B.rcv_base)
+    {
+
+      return seq < tail || seq >= Receiver_B.rcv_base;
+    }
+    else
+    {
+
+      return seq >= Receiver_B.rcv_base && seq < tail;
+    }
+  }
+}
+
 int is_send_window_full()
 {
 
-  return Sender_A.next_seq >= Sender_A.send_base + WINDOW_SIZE;
+  return Sender_A.next_seq == (Sender_A.send_base + WINDOW_SIZE) % LIMIT_SEQNO;
 }
 
 void slide_and_send(int acknum)
 {
 
-  int count = 0;
-  for (int i = Sender_A.send_base; i <= acknum; ++i)
+  int count = 0, offset = 0;
+  if (acknum < Sender_A.send_base)
+    offset = LIMIT_SEQNO;
+  for (int i = Sender_A.send_base; i <= acknum + offset; ++i)
   {
+    send_window.at(i % LIMIT_SEQNO).key = 0;
     ++count;
   }
 
-  Sender_A.send_base += count;
+  Sender_A.send_base = (Sender_A.send_base + count) % LIMIT_SEQNO;
 
   /* after window slides, you get more space for the buffered messages */
   while (count > 0)
@@ -172,7 +212,7 @@ void deliver_packets()
   for (int i = Receiver_B.rcv_base; i < Receiver_B.rcv_base + WINDOW_SIZE; ++i)
   {
 
-    p = &rcv_window.at(i);
+    p = &rcv_window.at(i % LIMIT_SEQNO);
     if (p->key != 1)
       break;
     tolayer5(p->packet.payload);
@@ -180,7 +220,7 @@ void deliver_packets()
     ++B_to_layer5;
     ++count;
   }
-  Receiver_B.rcv_base += count;
+  Receiver_B.rcv_base = (Receiver_B.rcv_base + count) % LIMIT_SEQNO;
 }
 
 void send_ack(int acknum)
@@ -223,7 +263,7 @@ void A_output(msg message)
   p->timeout = (time_now + RXMT_TIMEOUT);
 
   tolayer3(A, p->packet);
-  Sender_A.next_seq = (Sender_A.next_seq + 1);
+  Sender_A.next_seq = (Sender_A.next_seq + 1) % LIMIT_SEQNO;
   ++A_to_B;
 }
 
@@ -239,20 +279,20 @@ void A_input(pkt packet)
     return;
   }
 
-  if (packet.acknum < Sender_A.send_base)
+  if (!is_within_window(A, packet.acknum))
   {
-    std::cout << "Old dup ACK Ignore\n"
+    std::cout << "Not in window!\n"
               << std::endl;
 
     return;
   }
 
-  if (packet.acknum >= Sender_A.send_base + WINDOW_SIZE)
-  {
-    std::cout << "ERROR: future packet\n"
-              << std::endl;
-    return;
-  }
+  // if (packet.acknum >= Sender_A.send_base + WINDOW_SIZE)
+  // {
+  //   std::cout << "ERROR: future packet\n"
+  //             << std::endl;
+  //   return;
+  // }
 
   /* if you get duplicate ack */
   if (send_window.at(packet.acknum).key == 2)
@@ -261,9 +301,9 @@ void A_input(pkt packet)
     for (int i = Sender_A.send_base; i < Sender_A.send_base + WINDOW_SIZE; ++i)
     {
 
-      if (send_window.at(i).key == 1)
+      if (send_window.at(i % LIMIT_SEQNO).key == 1)
       {
-        tolayer3(A, send_window.at(i).packet);
+        tolayer3(A, send_window.at(i % LIMIT_SEQNO).packet);
         ++A_retrans_B;
         break;
       }
@@ -278,11 +318,15 @@ void A_input(pkt packet)
 /* called when A's timer goes off */
 void A_timerinterrupt()
 {
-
-  for (int i = Sender_A.send_base; i < Sender_A.next_seq; ++i)
+  int offset = 0;
+  if (Sender_A.next_seq < Sender_A.send_base)
+  {
+    offset = LIMIT_SEQNO;
+  }
+  for (int i = Sender_A.send_base; i < Sender_A.next_seq + offset; ++i)
   {
 
-    struct packet_slot *p = &send_window.at(i);
+    struct packet_slot *p = &send_window.at(i % LIMIT_SEQNO);
 
     if (p->key == 1 && p->timeout < time_now)
     {
@@ -301,7 +345,7 @@ void A_init(void)
 {
   Sender_A.next_seq = FIRST_SEQNO;
   Sender_A.send_base = FIRST_SEQNO;
-
+  send_window.resize(LIMIT_SEQNO);
   for (int i = 0; i < BUFFER_SIZE; i++)
   {
     send_window[i].key = 0;
@@ -322,11 +366,13 @@ void B_input(pkt packet)
     return;
   }
 
-  if (packet.seqnum >= Receiver_B.rcv_base + WINDOW_SIZE)
-  {
-    std::cout << "Packet seq exceed recv window" << std::endl;
-    return;
-  }
+  // if (!is_within_window(B, packet.seqnum))
+  // {
+  //   send_ack(Receiver_B.last_ack_seq);
+  //   ++B_acks;
+  //   std::cout << "Packet seq exceed recv window" << std::endl;
+  //   return;
+  // }
 
   struct packet_slot *p = &rcv_window.at(packet.seqnum);
 
@@ -349,7 +395,7 @@ void B_input(pkt packet)
   p->packet.acknum = packet.acknum;
 
   /* if the data packet is in order */
-  if (packet.seqnum == Receiver_B.last_ack_seq + 1)
+  if (packet.seqnum == (Receiver_B.last_ack_seq + 1) % LIMIT_SEQNO)
   {
     p->key = 1;
     Receiver_B.last_ack_seq = packet.seqnum;
@@ -363,6 +409,15 @@ void B_input(pkt packet)
     send_ack(Receiver_B.last_ack_seq);
     ++B_acks;
   }
+
+  if (packet.seqnum < WINDOW_SIZE)
+  {
+    rcv_window.at(rcv_window.size() - (WINDOW_SIZE - packet.seqnum)).key = 0;
+  }
+  else
+  {
+    rcv_window.at(packet.seqnum - WINDOW_SIZE).key = 0;
+  }
 }
 
 /* the following rouytine will be called once (only) before any other */
@@ -370,6 +425,7 @@ void B_input(pkt packet)
 void B_init()
 {
   Receiver_B.last_ack_seq = -1;
+  rcv_window.resize(LIMIT_SEQNO);
   for (int i = 0; i < BUFFER_SIZE; i++)
   {
 
