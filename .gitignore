@@ -2,5 +2,6 @@
 OutputFile
 *.o
 sr
+gbn
 sr.o
 .DS_Store

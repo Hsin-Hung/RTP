@@ -137,57 +137,24 @@ int compute_checksum(struct pkt *packet)
   return checksum;
 }
 
+int is_within_window(int base, int seq)
+{
+
+  return (seq >= base && seq < base + WINDOW_SIZE) || (seq < base && seq + LIMIT_SEQNO < base + WINDOW_SIZE);
+}
+
 int is_send_window_full()
 {
 
-  return Sender_A.next_seq >= Sender_A.send_base + WINDOW_SIZE;
+  return Sender_A.next_seq == (Sender_A.send_base + WINDOW_SIZE) % LIMIT_SEQNO;
 }
 
-void slide_and_send()
+void send_ack(int acknum)
 {
-
-  int count = 0;
-  for (int i = Sender_A.send_base; i < Sender_A.send_base + WINDOW_SIZE; ++i)
-  {
-
-    /* if packet is not acked, then stop sliding window */
-    if (send_window.at(i).key != 2)
-      break;
-    send_window.at(i).key = 0;
-    ++count;
-  }
-
-  Sender_A.send_base += count;
-
-  /* after window slides, you get more space for the buffered messages */
-  while (count > 0)
-  {
-    if (buffer.empty())
-      break;
-    A_output(buffer.front());
-    buffer.pop();
-    --count;
-  }
-}
-
-void deliver_packets()
-{
-
-  struct packet_slot *p;
-  int count = 0;
-  for (int i = Receiver_B.rcv_base; i < Receiver_B.rcv_base + WINDOW_SIZE; ++i)
-  {
-
-    p = &rcv_window.at(i);
-    if (!p->key)
-      break;
-    tolayer5(p->packet.payload);
-    p->key = 0;
-    ++B_to_layer5;
-    ++count;
-  }
-
-  Receiver_B.rcv_base += count;
+  struct pkt packet;
+  packet.acknum = acknum;
+  packet.checksum = compute_checksum(&packet);
+  tolayer3(B, packet);
 }
 
 /********* STUDENTS WRITE THE NEXT SIX ROUTINES *********/
@@ -207,12 +174,6 @@ void A_output(msg message)
   /* get a new packet slot for the new packet */
   struct packet_slot *p = &send_window.at(Sender_A.next_seq);
 
-  if (p->key)
-  {
-    std::cout << "[ERROR] new packet slot already allocated" << std::endl;
-    return;
-  }
-
   /* set up packet */
   memcpy(p->packet.payload, message.data, sizeof(message.data));
   p->packet.acknum = 0;
@@ -222,7 +183,11 @@ void A_output(msg message)
   p->timeout = (time_now + RXMT_TIMEOUT);
 
   tolayer3(A, p->packet);
-  Sender_A.next_seq = (Sender_A.next_seq + 1);
+  if (Sender_A.send_base == Sender_A.next_seq)
+  {
+    starttimer(A, RXMT_TIMEOUT);
+  }
+  Sender_A.next_seq = (Sender_A.next_seq + 1) % LIMIT_SEQNO;
   ++A_to_B;
 }
 
@@ -238,42 +203,56 @@ void A_input(pkt packet)
     return;
   }
 
-  if (packet.acknum < Sender_A.send_base)
+  if (!is_within_window(Sender_A.send_base, packet.acknum))
   {
-    std::cout << "Dup ACK Ignore\n"
+    std::cout << "Not in window!\n"
               << std::endl;
 
     return;
   }
 
-  if (packet.acknum >= Sender_A.send_base + WINDOW_SIZE)
+  int count = 0;
+  if (packet.acknum < Sender_A.send_base)
   {
-    std::cout << "ERROR: Ack future packet\n"
-              << std::endl;
+
+    count = packet.acknum - Sender_A.send_base + LIMIT_SEQNO;
+  }
+  else
+  {
+
+    count = packet.acknum - Sender_A.send_base;
   }
 
-  Sender_A.send_base = packet.acknum + 1;
-  if(Sender_A.send_base == Sender_A.next_seq){
-    stoptimer(A);
-    send_window.at(packet.seqnum).key = 2;
-    slide_and_send();
-  }else{
+  Sender_A.send_base = (packet.acknum + 1) % LIMIT_SEQNO;
+
+  while (count > 0)
+  {
+    if (buffer.empty())
+      break;
+    A_output(buffer.front());
+    buffer.pop();
+    --count;
+  }
+  stoptimer(A);
+  if (Sender_A.send_base != Sender_A.next_seq)
+  {
     starttimer(A, RXMT_TIMEOUT);
   }
-  
 }
 
 /* called when A's timer goes off */
 void A_timerinterrupt()
 {
+  int i = Sender_A.send_base;
 
-  for (int i = Sender_A.send_base; i < Sender_A.next_seq; ++i)
+  while (i != Sender_A.next_seq)
   {
 
     struct packet_slot *p = &send_window.at(i);
     tolayer3(A, p->packet);
     ++A_retrans_B;
-    
+
+    i = (i + 1) % LIMIT_SEQNO;
   }
 
   starttimer(A, RXMT_TIMEOUT);
@@ -285,12 +264,11 @@ void A_init(void)
 {
   Sender_A.next_seq = FIRST_SEQNO;
   Sender_A.send_base = FIRST_SEQNO;
-
+  send_window.resize(LIMIT_SEQNO);
   for (int i = 0; i < BUFFER_SIZE; i++)
   {
     send_window[i].key = 0;
   }
-  starttimer(A, RXMT_TIMEOUT);
 }
 
 /* called from layer 3, when a packet arrives for layer 4 at B*/
@@ -306,51 +284,37 @@ void B_input(pkt packet)
     return;
   }
 
-  if(packet.seqnum != Receiver_B.expected_seq){
-
-    std::cout << "Not expected seq number!\n" << std::endl;
-    return;
-  }
-
-  struct packet_slot *p = &rcv_window.at(packet.seqnum);
-
-  /* if the packet has already been received and acked, simply ack again */
-  if (p->key)
+  if (packet.seqnum != Receiver_B.expected_seq)
   {
 
-    packet.acknum = Receiver_B.expected_seq;
-    packet.checksum = compute_checksum(&packet);
-    tolayer3(B, packet);
+    send_ack(Receiver_B.expected_seq - 1);
     ++B_acks;
+    std::cout << "Not expected seq number!\n"
+              << std::endl;
     return;
   }
+  struct packet_slot *p = &rcv_window.at(packet.seqnum);
 
-  p->key = 1;
+  p->key = 2;
   tolayer5(packet.payload);
+  ++B_to_layer5;
   /* add the packet into receiver window */
   memcpy(p->packet.payload, packet.payload, sizeof(packet.payload));
   p->packet.checksum = packet.checksum;
   p->packet.seqnum = packet.seqnum;
   p->packet.acknum = packet.acknum;
 
-  packet.acknum = Receiver_B.expected_seq;
-  packet.checksum = compute_checksum(&packet);
-  tolayer3(B, packet);
-  ++Receiver_B.expected_seq;
+  send_ack(Receiver_B.expected_seq);
   ++B_acks;
-
+  Receiver_B.expected_seq = (Receiver_B.expected_seq + 1) % LIMIT_SEQNO;
 }
 
 /* the following rouytine will be called once (only) before any other */
 /* entity B routines are called. You can use it to do any initialization */
 void B_init()
 {
-
-  for (int i = 0; i < BUFFER_SIZE; i++)
-  {
-
-    rcv_window[i].key = 0;
-  }
+  Receiver_B.expected_seq = FIRST_SEQNO;
+  rcv_window.resize(LIMIT_SEQNO);
 }
 
 /* called at end of simulation to print final statistics */

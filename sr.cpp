@@ -136,41 +136,10 @@ int compute_checksum(struct pkt *packet)
   return checksum;
 }
 
-int is_within_window(int AorB, int seq)
+int is_within_window(int base, int seq)
 {
 
-  if (AorB == A)
-  {
-
-    int tail = (Sender_A.send_base + WINDOW_SIZE) % LIMIT_SEQNO;
-
-    if (tail < Sender_A.send_base)
-    {
-
-      return seq < tail || seq >= Sender_A.send_base;
-    }
-    else
-    {
-
-      return seq >= Sender_A.send_base && seq < tail;
-    }
-  }
-  else
-  {
-
-    int tail = (Receiver_B.rcv_base + WINDOW_SIZE) % LIMIT_SEQNO;
-
-    if (tail < Receiver_B.rcv_base)
-    {
-
-      return seq < tail || seq >= Receiver_B.rcv_base;
-    }
-    else
-    {
-
-      return seq >= Receiver_B.rcv_base && seq < tail;
-    }
-  }
+  return (seq >= base && seq < base + WINDOW_SIZE) || (seq < base && seq + LIMIT_SEQNO < base + WINDOW_SIZE);
 }
 
 int is_send_window_full()
@@ -279,7 +248,7 @@ void A_input(pkt packet)
     return;
   }
 
-  if (!is_within_window(A, packet.acknum))
+  if (!is_within_window(Sender_A.send_base, packet.acknum))
   {
     std::cout << "Not in window!\n"
               << std::endl;
@@ -346,10 +315,6 @@ void A_init(void)
   Sender_A.next_seq = FIRST_SEQNO;
   Sender_A.send_base = FIRST_SEQNO;
   send_window.resize(LIMIT_SEQNO);
-  for (int i = 0; i < BUFFER_SIZE; i++)
-  {
-    send_window[i].key = 0;
-  }
   starttimer(A, TIMER_INCR);
 }
 
@@ -426,11 +391,6 @@ void B_init()
 {
   Receiver_B.last_ack_seq = -1;
   rcv_window.resize(LIMIT_SEQNO);
-  for (int i = 0; i < BUFFER_SIZE; i++)
-  {
-
-    rcv_window[i].key = 0;
-  }
 }
 
 /* called at end of simulation to print final statistics */
