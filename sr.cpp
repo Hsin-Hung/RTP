@@ -87,6 +87,7 @@ struct time_stats
 {
   double time_start;
   double time_end;
+  int retransmit;
 };
 
 double A_from_layer5 = 0.0;
@@ -165,12 +166,12 @@ void slide_and_send(int acknum)
   /* slide the window */
   while (i != acknum)
   {
-    if (rtt.at(i).time_end - rtt.at(i).time_start > 0)
+    if (rtt.at(i).time_end - rtt.at(i).time_start > 0 && !rtt.at(i).retransmit)
     {
       totalRtt += (rtt.at(i).time_end - rtt.at(i).time_start);
       ++totalRttPackets;
     }
-
+    rtt.at(i).retransmit = 0;
     if (comm.at(i).time_end - comm.at(i).time_start > 0)
     {
       totalComm += (comm.at(i).time_end - comm.at(i).time_start);
@@ -291,6 +292,7 @@ void A_input(pkt packet)
 
       if (send_window.at(i % LIMIT_SEQNO).key == 1)
       {
+        rtt.at(i % LIMIT_SEQNO).retransmit = 1;
         tolayer3(A, send_window.at(i % LIMIT_SEQNO).packet);
         ++A_retrans_B;
         break;
@@ -317,6 +319,7 @@ void A_timerinterrupt()
     if (p->key == 1 && p->timeout < time_now)
     {
       p->timeout = (time_now + RXMT_TIMEOUT);
+      rtt.at(i).retransmit = 1;
       tolayer3(A, p->packet);
       ++A_retrans_B;
     }

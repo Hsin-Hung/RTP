@@ -89,6 +89,13 @@ struct Receiver
 
 } Receiver_B;
 
+struct time_stats
+{
+  double time_start;
+  double time_end;
+  int retransmit;
+};
+
 double A_from_layer5 = 0.0;
 double A_to_B = 0.0;
 double B_from_A = 0.0;
@@ -221,7 +228,8 @@ void A_output(msg message)
   p->packet.checksum = compute_checksum(&(p->packet));
   p->key = 1; /* packet is sent but not acked */
   p->timeout = (time_now + RXMT_TIMEOUT);
-
+  rtt.at(Sender_A.next_seq).time_start = time_now;
+  comm.at(Sender_A.next_seq).time_start = time_now;
   tolayer3(A, p->packet);
   if (Sender_A.send_base == Sender_A.next_seq)
   {
@@ -251,8 +259,29 @@ void A_input(pkt packet)
     return;
   }
 
+  rtt.at(packet.acknum).time_end = time_now;
+  comm.at(packet.acknum).time_end = time_now;
   /* slide the window after packets are Acked */
-  int count = 0;
+
+  int i = Sender_A.send_base, count = 0;
+
+  while (i != (packet.acknum + 1) % LIMIT_SEQNO)
+  {
+
+    if (rtt.at(i).time_end - rtt.at(i).time_start > 0 && !rtt.at(i).retransmit)
+    {
+      totalRtt += (rtt.at(i).time_end - rtt.at(i).time_start);
+      ++totalRttPackets;
+    }
+    rtt.at(i).retransmit = 0;
+    if (comm.at(i).time_end - comm.at(i).time_start > 0)
+    {
+      totalComm += (comm.at(i).time_end - comm.at(i).time_start);
+      ++totalCommPackets;
+    }
+    i = (i + 1) % LIMIT_SEQNO;
+  }
+
   if (packet.acknum < Sender_A.send_base)
   {
 
@@ -294,6 +323,7 @@ void A_timerinterrupt()
     /* only retransmit unAcked packets */
     if (std::find(Sender_A.latest_sacks.begin(), Sender_A.latest_sacks.end(), i) == Sender_A.latest_sacks.end())
     {
+      rtt.at(i).retransmit = 1;
       tolayer3(A, p->packet);
       ++A_retrans_B;
     }
@@ -311,10 +341,8 @@ void A_init(void)
   Sender_A.next_seq = FIRST_SEQNO;
   Sender_A.send_base = FIRST_SEQNO;
   send_window.resize(LIMIT_SEQNO);
-  for (int i = 0; i < BUFFER_SIZE; i++)
-  {
-    send_window[i].key = 0;
-  }
+  rtt.resize(LIMIT_SEQNO);
+  comm.resize(LIMIT_SEQNO);
 }
 
 /* called from layer 3, when a packet arrives for layer 4 at B*/
@@ -380,8 +408,8 @@ void Simulation_done()
   printf("Number of corrupted packets: %f \n", corrupt);
   printf("Ratio of lost packets: %f \n", (A_retrans_B - corrupt) / ((A_to_B + A_retrans_B) + B_acks));
   printf("Ratio of corrupted packets: %f \n", (corrupt) / ((A_to_B + A_retrans_B) + B_acks - (A_retrans_B - corrupt)));
-  printf("Average RTT: <YourVariableHere> \n");
-  printf("Average communication time: <YourVariableHere> \n");
+  printf("Average RTT: %f \n", totalRtt / totalRttPackets);
+  printf("Average communication time: %f \n", totalComm / totalCommPackets);
   printf("==================================================");
 
   /* PRINT YOUR OWN STATISTIC HERE TO CHECK THE CORRECTNESS OF YOUR PROGRAM */
