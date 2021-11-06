@@ -204,6 +204,12 @@ void send_ack(int acknum)
   tolayer3(B, packet);
 }
 
+std::string packet_str(struct pkt packet)
+{
+
+  return "packet is seq: " + std::to_string(packet.seqnum) + ", ack: " + std::to_string(packet.acknum) + ", check: " + std::to_string(packet.checksum);
+}
+
 /********* STUDENTS WRITE THE NEXT SIX ROUTINES *********/
 
 /* called from layer 5, passed the data to be sent to other side */

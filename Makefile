@@ -1,22 +1,12 @@
-CC          = gcc
-LIBDIR      = /arch/gnu/lib
-LIBFLAGS    = -L${LIBDIR}
-CFLAGS      = $(LIBFLAGS) -g 
-GCCLIBS     = -lstdc++
 
-OBJS = sr.o 
-EXE = sr
+all: sr gbn
 
-all: ${EXE}
+sr: sr.o
+	g++ sr.cpp -o sr
 
-%.o: %.cpp
-	${CC} ${CFLAGS} -c $*.cpp
-
-${EXE}: ${OBJS}
-	${CC} ${CFLAGS} -o ${EXE} ${OBJS} ${GCCLIBS}
-
-sr.o: sr.cpp
+gbn: gbn.o
+	g++ gbn.cpp -o gbn
 
 clean:
-	rm -f ${EXE} ${OBJS} *~
+	rm -f sr gbn *.o OutputFile
      
