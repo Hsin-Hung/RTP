@@ -9,6 +9,7 @@
 #include <queue>
 #include <vector>
 #include <string>
+#include <algorithm>
 #include <iostream>
 
 /* ******************************************************************
@@ -74,6 +75,7 @@ struct Sender
 {
   int next_seq;
   int send_base;
+  std::vector<int> latest_sacks;
 
 } Sender_A;
 
@@ -81,6 +83,9 @@ struct Receiver
 {
   int rcv_base;
   int expected_seq;
+  int last_ack;
+  std::vector<int> latest_sacks;
+  int next_sack;
 
 } Receiver_B;
 
@@ -123,6 +128,22 @@ extern double time_now;     // simulation time, for your debug purpose
 /********* YOU MAY ADD SOME ROUTINES HERE ********/
 
 /* computer checksum that simply adds up all fields in the given packet */
+
+void add_sack(int seq)
+{
+
+  if (Receiver_B.latest_sacks.size() < 5)
+  {
+    Receiver_B.latest_sacks.push_back(seq);
+  }
+  else
+  {
+    Receiver_B.latest_sacks.at(Receiver_B.next_sack) = seq;
+  }
+
+  Receiver_B.next_sack = (Receiver_B.next_sack + 1) % 5;
+}
+
 int compute_checksum(struct pkt *packet)
 {
 
@@ -130,6 +151,10 @@ int compute_checksum(struct pkt *packet)
   checksum += packet->seqnum;
   checksum += packet->acknum;
 
+  for (int i = 0; i < 5; i++)
+  {
+    checksum += packet->sack[i];
+  }
   for (int i = 0; i < 20; i++)
   {
     checksum += packet->payload[i];
@@ -152,6 +177,18 @@ int is_send_window_full()
 void send_ack(int acknum)
 {
   struct pkt packet;
+  for (int i = 0; i < 5; ++i)
+  {
+    if (i < Receiver_B.latest_sacks.size())
+    {
+      packet.sack[i] = Receiver_B.latest_sacks.at(i);
+    }
+    else
+    {
+      packet.sack[i] = -1;
+    }
+  }
+
   packet.acknum = acknum;
   packet.checksum = compute_checksum(&packet);
   tolayer3(B, packet);
@@ -249,8 +286,11 @@ void A_timerinterrupt()
   {
 
     struct packet_slot *p = &send_window.at(i);
-    tolayer3(A, p->packet);
-    ++A_retrans_B;
+    if (std::find(Sender_A.latest_sacks.begin(), Sender_A.latest_sacks.end(), i) == Sender_A.latest_sacks.end())
+    {
+      tolayer3(A, p->packet);
+      ++A_retrans_B;
+    }
 
     i = (i + 1) % LIMIT_SEQNO;
   }
@@ -284,18 +324,22 @@ void B_input(pkt packet)
     return;
   }
 
+  if (is_within_window(Receiver_B.rcv_base, packet.seqnum))
+  {
+    add_sack(packet.seqnum);
+  }
+
   if (packet.seqnum != Receiver_B.expected_seq)
   {
-
-    send_ack(Receiver_B.expected_seq - 1);
+    send_ack(Receiver_B.last_ack);
     ++B_acks;
     std::cout << "Not expected seq number!\n"
               << std::endl;
     return;
   }
-  struct packet_slot *p = &rcv_window.at(packet.seqnum);
 
-  p->key = 2;
+  struct packet_slot *p = &rcv_window.at(packet.seqnum);
+  p->key = 0;
   tolayer5(packet.payload);
   ++B_to_layer5;
   /* add the packet into receiver window */
@@ -303,9 +347,9 @@ void B_input(pkt packet)
   p->packet.checksum = packet.checksum;
   p->packet.seqnum = packet.seqnum;
   p->packet.acknum = packet.acknum;
-
   send_ack(Receiver_B.expected_seq);
   ++B_acks;
+  Receiver_B.last_ack = Receiver_B.expected_seq;
   Receiver_B.expected_seq = (Receiver_B.expected_seq + 1) % LIMIT_SEQNO;
 }
 
@@ -314,6 +358,7 @@ void B_input(pkt packet)
 void B_init()
 {
   Receiver_B.expected_seq = FIRST_SEQNO;
+  Receiver_B.last_ack = -1;
   rcv_window.resize(LIMIT_SEQNO);
 }
 
@@ -447,6 +492,10 @@ int main(int argc, char **argv)
       pkt2give.seqnum = eventptr->pktptr->seqnum;
       pkt2give.acknum = eventptr->pktptr->acknum;
       pkt2give.checksum = eventptr->pktptr->checksum;
+      for (i = 0; i < 5; i++)
+      {
+        pkt2give.sack[i] = eventptr->pktptr->sack[i];
+      }
       for (i = 0; i < 20; i++)
         pkt2give.payload[i] = eventptr->pktptr->payload[i];
       if (eventptr->eventity == A) /* deliver packet by calling */
@@ -683,6 +732,10 @@ void tolayer3(int AorB, pkt packet)
   mypktptr->seqnum = packet.seqnum;
   mypktptr->acknum = packet.acknum;
   mypktptr->checksum = packet.checksum;
+  for (i = 0; i < 5; i++)
+  {
+    mypktptr->sack[i] = packet.sack[i];
+  }
   for (i = 0; i < 20; i++)
     mypktptr->payload[i] = packet.payload[i];
   if (TRACE > 2)
