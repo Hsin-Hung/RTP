@@ -98,7 +98,9 @@ double B_acks = 0.0;
 double corrupt = 0.0;
 double loss_ratio = 0.0;
 double corrupt_ratio = 0.0;
-double avg_comm_time = 0.0;
+std::vector<struct time_stats> rtt(BUFFER_SIZE), comm(BUFFER_SIZE);
+double totalRtt = 0.0, totalComm = 0.0;
+double totalRttPackets = 0.0, totalCommPackets = 0.0;
 
 /* Please use the following values in your program */
 
@@ -127,8 +129,7 @@ extern double time_now;     // simulation time, for your debug purpose
 
 /********* YOU MAY ADD SOME ROUTINES HERE ********/
 
-/* computer checksum that simply adds up all fields in the given packet */
-
+/* add an Acked packet to SACK */
 void add_sack(int seq)
 {
 
@@ -144,6 +145,7 @@ void add_sack(int seq)
   Receiver_B.next_sack = (Receiver_B.next_sack + 1) % 5;
 }
 
+/* computer checksum that simply adds up all fields in the given packet */
 int compute_checksum(struct pkt *packet)
 {
 
@@ -162,6 +164,7 @@ int compute_checksum(struct pkt *packet)
   return checksum;
 }
 
+/* check if the given sequence number is within the window */
 int is_within_window(int base, int seq)
 {
 
@@ -235,7 +238,7 @@ void A_input(pkt packet)
   if (packet.checksum != compute_checksum(&packet))
   {
     ++corrupt;
-    std::cout << "ACK Packet corrupted!\n"
+    std::cout << "Packet corrupted!\n"
               << std::endl;
     return;
   }
@@ -248,6 +251,7 @@ void A_input(pkt packet)
     return;
   }
 
+  /* slide the window after packets are Acked */
   int count = 0;
   if (packet.acknum < Sender_A.send_base)
   {
@@ -262,6 +266,7 @@ void A_input(pkt packet)
 
   Sender_A.send_base = (packet.acknum + 1) % LIMIT_SEQNO;
 
+  /* send more packets after sliding window */
   while (count > 0)
   {
     if (buffer.empty())
@@ -286,6 +291,7 @@ void A_timerinterrupt()
   {
 
     struct packet_slot *p = &send_window.at(i);
+    /* only retransmit unAcked packets */
     if (std::find(Sender_A.latest_sacks.begin(), Sender_A.latest_sacks.end(), i) == Sender_A.latest_sacks.end())
     {
       tolayer3(A, p->packet);
@@ -318,23 +324,23 @@ void B_input(pkt packet)
   ++B_from_A;
   if (packet.checksum != compute_checksum(&packet))
   {
-    std::cout << "Corrupted packet!\n"
+    std::cout << "packet corrupted!\n"
               << std::endl;
     ++corrupt;
     return;
   }
 
+  /* update the SACK with 5 lastest Acked packets */
   if (is_within_window(Receiver_B.rcv_base, packet.seqnum))
   {
     add_sack(packet.seqnum);
   }
 
+  /* only Ack packets in order */
   if (packet.seqnum != Receiver_B.expected_seq)
   {
     send_ack(Receiver_B.last_ack);
     ++B_acks;
-    std::cout << "Not expected seq number!\n"
-              << std::endl;
     return;
   }
 

@@ -49,8 +49,8 @@ struct pkt
   ---------------------------------------------------------------------------*/
 
 void A_output(msg message);
-#define BUFFER_SIZE 5000
-#define TIMER_INCR 1.0
+#define BUFFER_SIZE 5000 /* default buffer size */
+#define TIMER_INCR 1.0   /* timer call back trigger time increment */
 
 struct packet_slot
 {
@@ -67,7 +67,7 @@ struct packet_slot
 std::vector<struct packet_slot> send_window(BUFFER_SIZE);
 std::vector<struct packet_slot> rcv_window(BUFFER_SIZE);
 
-std::queue<struct msg> buffer; /* msg buffer for when send window is full */
+std::queue<struct msg> buffer; /* msg buffer when send window is full */
 
 struct Sender
 {
@@ -83,6 +83,12 @@ struct Receiver
 
 } Receiver_B;
 
+struct time_stats
+{
+  double time_start;
+  double time_end;
+};
+
 double A_from_layer5 = 0.0;
 double A_to_B = 0.0;
 double B_from_A = 0.0;
@@ -90,9 +96,11 @@ double A_retrans_B = 0.0;
 double B_to_layer5 = 0.0;
 double B_acks = 0.0;
 double corrupt = 0.0;
+std::vector<struct time_stats> rtt(BUFFER_SIZE), comm(BUFFER_SIZE);
+double totalRtt = 0.0, totalComm = 0.0;
+double totalRttPackets = 0.0, totalCommPackets = 0.0;
 double loss_ratio = 0.0;
 double corrupt_ratio = 0.0;
-double avg_comm_time = 0.0;
 
 /* Please use the following values in your program */
 
@@ -136,6 +144,7 @@ int compute_checksum(struct pkt *packet)
   return checksum;
 }
 
+/* check if the given sequence number is within the window */
 int is_within_window(int base, int seq)
 {
 
@@ -147,22 +156,35 @@ int is_send_window_full()
 
   return Sender_A.next_seq == (Sender_A.send_base + WINDOW_SIZE) % LIMIT_SEQNO;
 }
-
+/* slide the window for acked packets and send more buffered messages to the sender */
 void slide_and_send(int acknum)
 {
 
-  int count = 0, offset = 0;
-  if (acknum < Sender_A.send_base)
-    offset = LIMIT_SEQNO;
-  for (int i = Sender_A.send_base; i <= acknum + offset; ++i)
+  int i = Sender_A.send_base, count = 0;
+
+  /* slide the window */
+  while (i != acknum)
   {
+    if (rtt.at(i).time_end - rtt.at(i).time_start > 0)
+    {
+      totalRtt += (rtt.at(i).time_end - rtt.at(i).time_start);
+      ++totalRttPackets;
+    }
+
+    if (comm.at(i).time_end - comm.at(i).time_start > 0)
+    {
+      totalComm += (comm.at(i).time_end - comm.at(i).time_start);
+      ++totalCommPackets;
+    }
+
     send_window.at(i % LIMIT_SEQNO).key = 0;
     ++count;
+    i = (i + 1) % LIMIT_SEQNO;
   }
 
   Sender_A.send_base = (Sender_A.send_base + count) % LIMIT_SEQNO;
 
-  /* after window slides, you get more space for the buffered messages */
+  /* send more buffered messages */
   while (count > 0)
   {
     if (buffer.empty())
@@ -173,6 +195,7 @@ void slide_and_send(int acknum)
   }
 }
 
+/* deliver acked and in order messages to layer 5 */
 void deliver_packets()
 {
 
@@ -207,7 +230,6 @@ void A_output(msg message)
 {
 
   ++A_from_layer5;
-
   if (is_send_window_full())
   {
     buffer.push(message);
@@ -219,7 +241,7 @@ void A_output(msg message)
 
   if (p->key)
   {
-    std::cout << "[ERROR] new packet slot already allocated" << std::endl;
+    std::cout << "[ERROR] packet slot already allocated!" << std::endl;
     return;
   }
 
@@ -230,6 +252,9 @@ void A_output(msg message)
   p->packet.checksum = compute_checksum(&(p->packet));
   p->key = 1; /* packet is sent but not acked */
   p->timeout = (time_now + RXMT_TIMEOUT);
+
+  rtt.at(Sender_A.next_seq).time_start = time_now;
+  comm.at(Sender_A.next_seq).time_start = time_now;
 
   tolayer3(A, p->packet);
   Sender_A.next_seq = (Sender_A.next_seq + 1) % LIMIT_SEQNO;
@@ -243,7 +268,7 @@ void A_input(pkt packet)
   if (packet.checksum != compute_checksum(&packet))
   {
     ++corrupt;
-    std::cout << "ACK Packet corrupted!\n"
+    std::cout << "Packet corrupted!\n"
               << std::endl;
     return;
   }
@@ -256,16 +281,10 @@ void A_input(pkt packet)
     return;
   }
 
-  // if (packet.acknum >= Sender_A.send_base + WINDOW_SIZE)
-  // {
-  //   std::cout << "ERROR: future packet\n"
-  //             << std::endl;
-  //   return;
-  // }
-
-  /* if you get duplicate ack */
+  /* if you get duplicate Ack, retransmit first unAcked packet */
   if (send_window.at(packet.acknum).key == 2)
   {
+    comm.at(packet.acknum).time_end = time_now;
 
     for (int i = Sender_A.send_base; i < Sender_A.send_base + WINDOW_SIZE; ++i)
     {
@@ -279,23 +298,21 @@ void A_input(pkt packet)
     }
     return;
   }
-
-  send_window.at(packet.acknum).key = 2;
+  rtt.at(packet.acknum).time_end = time_now;
+  comm.at(packet.acknum).time_end = time_now;
+  send_window.at(packet.acknum).key = 2; /* packet Acked */
   slide_and_send(packet.acknum);
 }
 
 /* called when A's timer goes off */
 void A_timerinterrupt()
 {
-  int offset = 0;
-  if (Sender_A.next_seq < Sender_A.send_base)
-  {
-    offset = LIMIT_SEQNO;
-  }
-  for (int i = Sender_A.send_base; i < Sender_A.next_seq + offset; ++i)
-  {
 
-    struct packet_slot *p = &send_window.at(i % LIMIT_SEQNO);
+  int i = Sender_A.send_base;
+
+  while (i != Sender_A.next_seq)
+  {
+    struct packet_slot *p = &send_window.at(i);
 
     if (p->key == 1 && p->timeout < time_now)
     {
@@ -303,6 +320,8 @@ void A_timerinterrupt()
       tolayer3(A, p->packet);
       ++A_retrans_B;
     }
+
+    i = (i + 1) % LIMIT_SEQNO;
   }
 
   starttimer(A, TIMER_INCR);
@@ -315,6 +334,8 @@ void A_init(void)
   Sender_A.next_seq = FIRST_SEQNO;
   Sender_A.send_base = FIRST_SEQNO;
   send_window.resize(LIMIT_SEQNO);
+  rtt.resize(LIMIT_SEQNO);
+  comm.resize(LIMIT_SEQNO);
   starttimer(A, TIMER_INCR);
 }
 
@@ -331,21 +352,11 @@ void B_input(pkt packet)
     return;
   }
 
-  // if (!is_within_window(B, packet.seqnum))
-  // {
-  //   send_ack(Receiver_B.last_ack_seq);
-  //   ++B_acks;
-  //   std::cout << "Packet seq exceed recv window" << std::endl;
-  //   return;
-  // }
-
   struct packet_slot *p = &rcv_window.at(packet.seqnum);
 
   /* if the packet has already been received and acked, simply ack again */
   if (p->key)
   {
-    std::cout << "Duplicate packet!\n"
-              << std::endl;
     send_ack(Receiver_B.last_ack_seq);
     ++B_acks;
     return;
@@ -375,6 +386,7 @@ void B_input(pkt packet)
     ++B_acks;
   }
 
+  /* reset the key of old packets */
   if (packet.seqnum < WINDOW_SIZE)
   {
     rcv_window.at(rcv_window.size() - (WINDOW_SIZE - packet.seqnum)).key = 0;
@@ -405,8 +417,8 @@ void Simulation_done()
   printf("Number of corrupted packets: %f \n", corrupt);
   printf("Ratio of lost packets: %f \n", (A_retrans_B - corrupt) / ((A_to_B + A_retrans_B) + B_acks));
   printf("Ratio of corrupted packets: %f \n", (corrupt) / ((A_to_B + A_retrans_B) + B_acks - (A_retrans_B - corrupt)));
-  printf("Average RTT: <YourVariableHere> \n");
-  printf("Average communication time: <YourVariableHere> \n");
+  printf("Average RTT: %f \n", totalRtt / totalRttPackets);
+  printf("Average communication time: %f \n", totalComm / totalCommPackets);
   printf("==================================================");
 
   /* PRINT YOUR OWN STATISTIC HERE TO CHECK THE CORRECTNESS OF YOUR PROGRAM */
