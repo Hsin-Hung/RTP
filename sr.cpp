@@ -164,7 +164,7 @@ void slide_and_send(int acknum)
   int i = Sender_A.send_base, count = 0;
 
   /* slide the window */
-  while (i != acknum)
+  while (i != (acknum + 1) % LIMIT_SEQNO)
   {
     if (rtt.at(i).time_end - rtt.at(i).time_start > 0 && !rtt.at(i).retransmit)
     {
@@ -292,6 +292,7 @@ void A_input(pkt packet)
   /* if you get duplicate Ack, retransmit first unAcked packet */
   if (send_window.at(packet.acknum).key == 2)
   {
+    std::cout << "A got Duplicate ACK from B, " << packet_str(packet) << std::endl;
     comm.at(packet.acknum).time_end = time_now;
 
     for (int i = Sender_A.send_base; i < Sender_A.send_base + WINDOW_SIZE; ++i)
@@ -300,6 +301,7 @@ void A_input(pkt packet)
       if (send_window.at(i % LIMIT_SEQNO).key == 1)
       {
         rtt.at(i % LIMIT_SEQNO).retransmit = 1;
+        std::cout << "TOLAYER3 Dup ACK Retransmit: " << packet_str(send_window.at(i % LIMIT_SEQNO).packet) << std::endl;
         tolayer3(A, send_window.at(i % LIMIT_SEQNO).packet);
         ++A_retrans_B;
         break;

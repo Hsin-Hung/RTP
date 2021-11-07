@@ -198,7 +198,7 @@ void send_ack(int acknum)
       packet.sack[i] = -1;
     }
   }
-
+  packet.seqnum = acknum;
   packet.acknum = acknum;
   packet.checksum = compute_checksum(&packet);
   tolayer3(B, packet);
@@ -252,7 +252,7 @@ void A_input(pkt packet)
   if (packet.checksum != compute_checksum(&packet))
   {
     ++corrupt;
-    std::cout << "Packet corrupted!\n"
+    std::cout << "A got corrupted packet from B!\n"
               << std::endl;
     return;
   }
@@ -298,7 +298,7 @@ void A_input(pkt packet)
 
     count = packet.acknum - Sender_A.send_base;
   }
-
+  std::cout << "A slides window from base: " << Sender_A.send_base << " to " << (packet.acknum + 1) % LIMIT_SEQNO << std::endl;
   Sender_A.send_base = (packet.acknum + 1) % LIMIT_SEQNO;
 
   /* send more packets after sliding window */
@@ -330,6 +330,7 @@ void A_timerinterrupt()
     if (std::find(Sender_A.latest_sacks.begin(), Sender_A.latest_sacks.end(), i) == Sender_A.latest_sacks.end())
     {
       rtt.at(i).retransmit = 1;
+      std::cout << "TOLAYER3 Timeout Retransmit: " << packet_str(p->packet) << std::endl;
       tolayer3(A, p->packet);
       ++A_retrans_B;
     }
@@ -358,12 +359,12 @@ void B_input(pkt packet)
   ++B_from_A;
   if (packet.checksum != compute_checksum(&packet))
   {
-    std::cout << "packet corrupted!\n"
+    std::cout << "B got corrupted packet from A!\n"
               << std::endl;
     ++corrupt;
     return;
   }
-
+  std::cout << "B got packet from A, " << packet_str(packet) << std::endl;
   /* update the SACK with 5 lastest Acked packets */
   if (is_within_window(Receiver_B.rcv_base, packet.seqnum))
   {
@@ -373,11 +374,13 @@ void B_input(pkt packet)
   /* only Ack packets in order */
   if (packet.seqnum != Receiver_B.expected_seq)
   {
+    std::cout << "B receives out of order packet, expects: " << Receiver_B.expected_seq << ", but " << packet_str(packet) << std::endl;
     send_ack(Receiver_B.last_ack);
     ++B_acks;
     return;
   }
 
+  std::cout << "B sends ACK in order, " << packet_str(packet) << std::endl;
   struct packet_slot *p = &rcv_window.at(packet.seqnum);
   p->key = 0;
   tolayer5(packet.payload);
@@ -501,7 +504,7 @@ int main(int argc, char **argv)
     evlist = evlist->next; /* remove this event from event list */
     if (evlist != NULL)
       evlist->prev = NULL;
-    if (TRACE >= 2)
+    if (TRACE >= 2 && eventptr->evtype != 0)
     {
       printf("\nEVENT time: %f,", eventptr->evtime);
       printf("  type: %d", eventptr->evtype);
@@ -624,7 +627,7 @@ void generate_next_arrival(void)
   struct event *evptr;
 
   if (TRACE > 2)
-    printf("          GENERATE NEXT ARRIVAL: creating new arrival\n");
+    printf("GENERATE NEXT ARRIVAL: creating new arrival\n");
 
   x = lambda * mrand(0) * 2; /* x is uniform on [0,2*lambda] */
                              /* having mean of lambda        */
@@ -641,8 +644,8 @@ void insertevent(event *p)
 
   if (TRACE > 2)
   {
-    printf("            INSERTEVENT: time is %f\n", time_now);
-    printf("            INSERTEVENT: future time will be %f\n", p->evtime);
+    // printf("INSERTEVENT: time is %f\n", time_now);
+    // printf("INSERTEVENT: future time will be %f\n", p->evtime);
   }
   q = evlist; /* q points to header of list in which p struct inserted */
   if (q == NULL)
@@ -696,7 +699,7 @@ void stoptimer(int AorB)
 {
   struct event *q /* ,*qold */;
   if (TRACE > 2)
-    printf("          STOP TIMER: stopping timer at %f\n", time_now);
+    // printf("STOP TIMER: stopping timer at %f\n", time_now);
   /* for (q=evlist; q!=NULL && q->next!=NULL; q = q->next)  */
   for (q = evlist; q != NULL; q = q->next)
     if ((q->evtype == TIMER_INTERRUPT && q->eventity == AorB))
@@ -729,7 +732,7 @@ void starttimer(int AorB, double increment)
   struct event *evptr;
 
   if (TRACE > 2)
-    printf("          START TIMER: starting timer at %f\n", time_now);
+    // printf("START TIMER: starting timer at %f\n", time_now);
   /* be nice: check to see if timer is already started, if so, then  warn */
   /* for (q=evlist; q!=NULL && q->next!=NULL; q = q->next)  */
   for (q = evlist; q != NULL; q = q->next)
@@ -762,7 +765,7 @@ void tolayer3(int AorB, pkt packet)
   {
     nlost++;
     if (TRACE > 0)
-      printf("          TOLAYER3: packet being lost\n");
+      printf("TOLAYER3: packet being lost\n");
     return;
   }
 
@@ -780,7 +783,7 @@ void tolayer3(int AorB, pkt packet)
     mypktptr->payload[i] = packet.payload[i];
   if (TRACE > 2)
   {
-    printf("          TOLAYER3: seq: %d, ack %d, check: %d ", mypktptr->seqnum,
+    printf("TOLAYER3: seq: %d, ack %d, check: %d \n", mypktptr->seqnum,
            mypktptr->acknum, mypktptr->checksum);
   }
 
@@ -811,11 +814,11 @@ void tolayer3(int AorB, pkt packet)
     else
       mypktptr->acknum = 999999;
     if (TRACE > 0)
-      printf("          TOLAYER3: packet being corrupted\n");
+      printf("TOLAYER3: packet being corrupted\n");
   }
 
   if (TRACE > 2)
-    printf("          TOLAYER3: scheduling arrival on other side\n");
+    printf("TOLAYER3: scheduling arrival on other side\n");
   insertevent(evptr);
 }
 
